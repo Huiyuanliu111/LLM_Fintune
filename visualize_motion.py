@@ -6,32 +6,18 @@ import argparse
 
 # KIT-ML / MMM (Master Motor Map) 21-joint skeleton approximation
 # Reference from Motion Diffusion Model (MDM) / HumanML3D standard paramUtil.py
-# This confirms our previous hypothesis:
-# 0: Root
-# 11: Left Hip ... 15: Left Toe
-# 16: Right Hip ... 20: Right Toe
-# 1, 2, 3, 4: Spine -> Head
-# 5, 6, 7: Left Arm
-# 8, 9, 10: Right Arm
-
-SKELETON_EDGES = [
-    # Spine / Head
-    (0, 1), (1, 2), (2, 3), (3, 4),
-    
-    # Left Arm (from Neck index 3)
-    (3, 5), (5, 6), (6, 7),
-    
-    # Right Arm (from Neck index 3)
-    (3, 8), (8, 9), (9, 10),
-    
-    # Left Leg (from Root 0)
-    (0, 11), (11, 12), (12, 13), (13, 14), (14, 15),
-    
-    # Right Leg (from Root 0)
-    (0, 16), (16, 17), (17, 18), (18, 19), (19, 20)
+KINEMATIC_CHAIN = [
+    # 左腿: 0,11,12,13,14,15
+    [0, 11, 12, 13, 14, 15],
+    # 右腿: 0,16,17,18,19,20
+    [0, 16, 17, 18, 19, 20],
+    # 躯干: 0,1,2,3,4
+    [0, 1, 2, 3, 4],
+    # 左臂: 3,5,6,7
+    [3, 5, 6, 7],
+    # 右臂: 3,8,9,10
+    [3, 8, 9, 10]
 ]
-# 注意：KIT-ML 的具体 21 关键点顺序如果没有文档很难猜对。
-# 建议先看点云 (Scatter Plot)，点云如果是人形，说明数据解析正确。
 
 def parse_motion_tokens(token_str, num_joints=21):
     """
@@ -53,80 +39,91 @@ def parse_motion_tokens(token_str, num_joints=21):
     motion_data = motion_flat.reshape(num_frames, num_joints, 3)
     return motion_data
 
+def plot_xzPlane(ax, minx, maxx, minz, maxz):
+    """绘制地面阴影区域"""
+    from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+    verts = [
+        [minx, 0, minz],
+        [minx, 0, maxz],
+        [maxx, 0, maxz],
+        [maxx, 0, minz]
+    ]
+    xz_plane = Poly3DCollection([verts])
+    xz_plane.set_facecolor((0.5, 0.5, 0.5, 0.2)) # 半透明灰色
+    ax.add_collection3d(xz_plane)
+
 def plot_motion(motion_data, output_file="motion_viz.gif", fps=10):
     """
-    绘制 3D 动画
-    motion_data: (T, 21, 3)
+    绘制 3D 动画 (MDM 风格)
     """
-    # 由于数据是量化后的 (0-255)，直接画出来形状是对的，但没有物理单位
-    # 我们可以交换坐标轴以符合 matplotlib 的默认视角 (通常 Y 是高，但在某些动捕数据中 Z 是高)
-    # 这里假设原始数据是 (x, y, z)
-    
-    fig = plt.figure(figsize=(8, 8))
+    # 定义颜色 (MDM 风格)
+    # 顺序: 左腿, 右腿, 躯干, 左臂, 右臂
+    # 对应上面的 kinematic_chain 顺序
+    colors = ["#4D84AA", "#5B9965", "#61CEB9", "#34C1E2", "#80B79A"] # 蓝色系/绿色系
+
+    fig = plt.figure(figsize=(6, 6))
     ax = fig.add_subplot(111, projection='3d')
     
-    # 设置固定的坐标轴范围，防止画面抖动
-    # 获取全局最大最小值
-    min_val = motion_data.min()
-    max_val = motion_data.max()
+    # 数据预处理：交换轴以适应 Matplotlib (x, y, z) -> (x, z, y)
+    # 并且让 Y 轴向上。原始数据中 Y 是高。
+    # 我们在 update 里处理这个映射，但在计算范围时要注意。
     
-    # 检测数据范围来决定半径
-    data_range = max_val - min_val
+    # 计算全局范围
+    xs = motion_data[:, :, 0]
+    ys = motion_data[:, :, 1] # Up
+    zs = motion_data[:, :, 2]
     
-    ax.set_xlabel('X')
-    ax.set_ylabel('Z')
-    ax.set_zlabel('Y')
+    min_x, max_x = xs.min(), xs.max()
+    min_y, max_y = ys.min(), ys.max()
+    min_z, max_z = zs.min(), zs.max()
     
-    # 初始化绘图对象
-    # 减小点的大小 (s=10 -> s=5)，减小线宽 (linewidth=1)
-    scatter = ax.scatter([], [], [], c='r', marker='o', s=5)
-    lines = [ax.plot([], [], [], 'b-', linewidth=1)[0] for _ in SKELETON_EDGES]
-    
+    # 固定的视野半径
+    radius = max(max_x - min_x, max_y - min_y, max_z - min_z) * 0.6
+    mid_x = (min_x + max_x) / 2
+    mid_y = (min_y + max_y) / 2
+    mid_z = (min_z + max_z) / 2
+
+    # 初始化线条对象
+    lines = []
+    for chain, color in zip(KINEMATIC_CHAIN, colors):
+        # 躯干(索引2)粗一点，其他细一点
+        lw = 4.0 if chain == KINEMATIC_CHAIN[2] else 2.0
+        lines.append(ax.plot([], [], [], '-', linewidth=lw, color=color)[0])
+
+    def init():
+        ax.set_xlim(mid_x - radius, mid_x + radius)
+        ax.set_ylim(min_z - radius, min_z + radius) # Matplotlib Y = Real Z
+        ax.set_zlim(min_y, min_y + 2*radius)        # Matplotlib Z = Real Y (Height)
+        
+        # 隐藏坐标轴和背景
+        ax.set_axis_off()
+        ax.grid(False)
+        
+        # 画地面 (y=0 in real world -> z=0 in matplotlib?)
+        # 这里的地面高度取数据的最低 Y 值
+        plot_xzPlane(ax, mid_x - radius, mid_x + radius, mid_z - radius, mid_z + radius)
+        return lines
+
     def update(frame_idx):
         frame_data = motion_data[frame_idx] # (21, 3)
         
-        # 更新点 - 交换 Y 和 Z 轴，让 XZ 成为水平面，Y 成为垂直高度
-        xs = frame_data[:, 0]
-        ys = frame_data[:, 2] # 原来的 Z 变成现在的 Y (深度)
-        zs = frame_data[:, 1] # 原来的 Y 变成现在的 Z (高度/垂直)
+        # 映射: 
+        # Real X -> Plot X
+        # Real Y (Height) -> Plot Z
+        # Real Z (Depth) -> Plot Y
         
-        # 动态调整坐标轴范围 (让画面紧跟人物，或者保持一个较大的固定范围)
-        # 这里我们保持一个以人为中心的固定框，稍微放大一点视野
-        center_x, center_y, center_z = xs.mean(), ys.mean(), zs.mean()
-        
-        # 使用动态计算的 plot_radius
-        plot_radius = data_range * 0.4 # 缩小视野范围以放大人物
-        
-        ax.set_xlim(center_x - plot_radius, center_x + plot_radius)
-        ax.set_ylim(center_y - plot_radius, center_y + plot_radius)
-        ax.set_zlim(center_z - plot_radius, center_z + plot_radius)
-        
-        # Matplotlib 3D scatter 需要特殊的输入格式 (x, y, z)
-        scatter._offsets3d = (xs, ys, zs)
-        
-        # 移除旧的文本标签 (如果存在)
-        if hasattr(update, "labels"):
-            for label in update.labels:
-                label.remove()
-        update.labels = []
-        
-        # 添加新的文本标签 (显示关节索引) - 字体改小
-        for i, (x, y, z) in enumerate(zip(xs, ys, zs)):
-            label = ax.text(x, y, z, str(i), fontsize=6, color='black')
-            update.labels.append(label)
-        
-        # 更新线
-        if SKELETON_EDGES:
-            for line, (start, end) in zip(lines, SKELETON_EDGES):
-                # 只有当索引在范围内时才画线
-                if start < len(frame_data) and end < len(frame_data):
-                    line.set_data([xs[start], xs[end]], [ys[start], ys[end]])
-                    line.set_3d_properties([zs[start], zs[end]])
-        
-        ax.set_title(f"Frame {frame_idx}/{len(motion_data)}")
-        return scatter, *lines
+        for i, (chain, line) in enumerate(zip(KINEMATIC_CHAIN, lines)):
+            x_data = frame_data[chain, 0]
+            y_data = frame_data[chain, 2] # Swap Y/Z
+            z_data = frame_data[chain, 1] # Height
+            
+            line.set_data(x_data, y_data)
+            line.set_3d_properties(z_data)
+            
+        ax.set_title(f"Frame {frame_idx}/{len(motion_data)}", fontsize=10)
+        return lines
     
-    ani = FuncAnimation(fig, update, frames=len(motion_data), interval=1000/fps, blit=False)
+    ani = FuncAnimation(fig, update, frames=len(motion_data), init_func=init, interval=1000/fps, blit=False)
     
     print(f"Saving animation to {output_file}...")
     ani.save(output_file, writer='pillow', fps=fps)
