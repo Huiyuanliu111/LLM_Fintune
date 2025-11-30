@@ -1,0 +1,34 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+env/
+venv/
+
+# IDE settings
+.vscode/
+.idea/
+
+# Model files and Checkpoints
+*.npy
+*.pt
+*.pth
+*.safetensors
+*.bin
+*.ckpt
+checkpoint-*/
+
+# Logs
+runs/
+logs/
+*.log
+
+# Datasets and large data folders
+*.jsonl
+KIT-ML/

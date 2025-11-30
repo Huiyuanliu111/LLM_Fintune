@@ -1,0 +1,31 @@
+[project]
+name = "llm-fintune"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "torch",
+    "torchvision",
+    "torchaudio",
+    "transformers>=4.57.3",
+    "peft>=0.18.0",
+    "datasets>=4.4.1",
+    "bitsandbytes>=0.48.2",
+    "trl>=0.25.1",
+    "accelerate>=1.12.0",
+    "ipynb>=0.5.1",
+    "ipykernel>=7.1.0",
+    "pip>=25.3",
+    "tensorboard>=2.20.0",
+]
+
+[[tool.uv.index]]
+name = "pytorch"
+url = "https://download.pytorch.org/whl/cu121"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch" }
+torchvision = { index = "pytorch" }
+torchaudio = { index = "pytorch" }
