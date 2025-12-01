@@ -16,7 +16,6 @@ venv/
 .idea/
 
 # Model files and Checkpoints
-*.npy
 *.pt
 *.pth
 *.safetensors
