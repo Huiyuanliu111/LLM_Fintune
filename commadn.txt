@@ -1,0 +1,1 @@
+uv run tensorboard --logdir Qwen-Motion-Finetuned-v2/runs

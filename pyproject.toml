@@ -18,6 +18,8 @@ dependencies = [
     "ipykernel>=7.1.0",
     "pip>=25.3",
     "tensorboard>=2.20.0",
+    "matplotlib>=3.10.7",
+    "moviepy<2.0.0",
 ]
 
 [[tool.uv.index]]
