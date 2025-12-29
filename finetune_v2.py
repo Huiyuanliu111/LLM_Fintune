@@ -88,33 +88,49 @@ def main():
     
     # 5. LoRA 配置
     peft_config = LoraConfig(
-        r=8,
+        r=8,  # 降低秩以节省显存 (16 -> 8)
         lora_alpha=32,
         lora_dropout=0.05,
         bias="none",
         task_type="CAUSAL_LM",
-        # 回退：仅微调 Attention 层
+        # 显存优化：仅微调 Q、V 和输出投影，去掉 MLP 层 (gate/up/down) 以大幅节省显存
         target_modules=["q_proj", "v_proj", "o_proj"],
-        # 回退：全量训练 Embedding 和 Head，这是效果最好的方案
+        # 重要：保存 Embedding 层和输出层，因为我们改了词表！
+        # 恢复 embed_tokens 的训练，否则模型无法理解新 Token 的含义，导致 Loss 不降
         modules_to_save=["embed_tokens", "lm_head"] 
     )
     
     # 应用 PEFT/LoRA 配置
+    # 这步之后，embed_tokens 和 lm_head 的 requires_grad 才会被设为 True
     model = get_peft_model(model, peft_config)
     model.print_trainable_parameters()
 
-    # --- 恢复 Gradient Hook (为了防止遗忘旧知识) ---
+    # --- 高级优化：只训练新 Token ---
+    # 通过 Hook 屏蔽旧 Token 的梯度，防止破坏原有知识
+    # 注意：这在逻辑上只训练新 Token，但显存占用可能不会显著减少（取决于优化器实现）
     def zero_out_old_token_grads_hook(grad):
-        if grad is None: return None
+        # 将原始词表范围内的梯度置为 0
+        if grad is None:
+            return None
+        # 极速版：直接原地修改，不 clone，减少一次巨大的内存复制！
+        # 这能显著降低反向传播时的瞬时峰值压力，防止系统崩溃
         grad[:original_vocab_size] = 0
         return grad
 
+    # 获取输入和输出层 (注意：PEFT 包装后，访问原始模块路径可能变化，但 get_input_embeddings 通常还能用)
     input_embeddings = model.get_input_embeddings()
     output_embeddings = model.get_output_embeddings()
     
+    # 注册 Hook
+    # 必须在 get_peft_model 之后注册，确保 requires_grad=True
     if input_embeddings is not None and input_embeddings.weight.requires_grad:
+        print("Registering gradient hook for Input Embeddings (Training only new tokens)...")
         input_embeddings.weight.register_hook(zero_out_old_token_grads_hook)
-    if output_embeddings is not None and output_embeddings.weight.requires_grad:
+    else:
+        print("Warning: Input Embeddings are frozen, hook skipped.")
+        
+    if output_embeddings is not None and output_embeddings is not input_embeddings and output_embeddings.weight.requires_grad:
+        print("Registering gradient hook for Output Head (Training only new tokens)...")
         output_embeddings.weight.register_hook(zero_out_old_token_grads_hook)
 
     # 6. 训练参数
@@ -125,12 +141,15 @@ def main():
         learning_rate=LEARNING_RATE,
         num_train_epochs=NUM_EPOCHS,
         logging_steps=10,
-        # 策略调整：中间不保存 Checkpoint，只在最后保存。
-        # 彻底解决保存时 RAM 爆炸导致的卡顿/死机问题。
-        save_strategy="no",
+        # 检查点策略：每 500 步保存一次，最多保留 3 个
+        save_strategy="steps",
+        save_steps=1,
+        save_total_limit=3,
         eval_strategy="epoch",
         fp16=True,
-        # 使用 Unpaged 8-bit 优化器，在 768 长度下显存应该够用，且比 Paged 稳定
+        # 显存优化：改用非 Paged 的 8-bit 优化器
+        # 因为 v4 数据短，显存足够，不需要卸载到 CPU 内存
+        # 这能避免保存检查点时系统内存爆炸导致的卡顿
         optim="adamw_bnb_8bit",
         # 解决 Windows 上 Ctrl+C 卡死或保存时死锁的问题：强制单线程加载数据
         dataloader_num_workers=0,
