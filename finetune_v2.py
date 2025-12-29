@@ -1,5 +1,6 @@
 import os
 import torch
+import gc
 from datasets import load_dataset
 from transformers import (
     AutoModelForCausalLM,
@@ -18,14 +19,15 @@ transformers.utils.import_utils.check_torch_load_is_safe = no_op
 
 # --- 配置参数 ---
 MODEL_NAME = "Qwen/Qwen2.5-1.5B-Instruct"
-# 使用处理后的新数据路径
-DATA_PATH = "KIT-ML/qwen_ready_v3"  
+# 使用处理后的新数据路径 (v4: 降采样版)
+DATA_PATH = "KIT-ML/qwen_ready_v4"  
 OUTPUT_DIR = "Qwen-Motion-Finetuned-v2"
 # 序列长度可以大大缩短了！
 # 21 joints * 3 dims = 63 tokens/frame
-# 40 frames * 63 = 2520 tokens
-# 加上文本描述，3072 足够了
-MAX_SEQ_LENGTH = 2700
+# 降采样 1/4 后，40帧原始数据 -> 10帧 -> 630 tokens
+# 120帧原始数据 -> 30帧 -> 1890 tokens
+# 1024 足够覆盖大部分中短动作，且显存非常安全
+MAX_SEQ_LENGTH = 1024
 BATCH_SIZE = 1
 GRAD_ACCUMULATION = 8
 LEARNING_RATE = 2e-4
@@ -36,8 +38,8 @@ def main():
     # 1. 加载数据集
     print(f"Loading data from {DATA_PATH}...")
     dataset = load_dataset("json", data_files={
-        "train": os.path.join(DATA_PATH, "train_v3.jsonl"),
-        "validation": os.path.join(DATA_PATH, "val_v3.jsonl")
+        "train": os.path.join(DATA_PATH, "train_v4.jsonl"),
+        "validation": os.path.join(DATA_PATH, "val_v4.jsonl")
     })
 
     # 2. 加载 Tokenizer
@@ -62,6 +64,10 @@ def main():
 
     # 4. 加载模型
     print("Loading model...")
+    # 清理一下缓存
+    gc.collect()
+    torch.cuda.empty_cache()
+    
     model = AutoModelForCausalLM.from_pretrained(
         MODEL_NAME,
         quantization_config=bnb_config,
@@ -71,24 +77,45 @@ def main():
     
     # --- 关键步骤：调整 Embedding 大小 ---
     # 因为 Tokenizer 变大了，模型的 Embedding 层也必须变大
+    # 保存原始词表大小，用于后续冻结旧 Token
+    original_vocab_size = model.get_input_embeddings().weight.shape[0]
+    
     model.resize_token_embeddings(len(tokenizer))
     print(f"Resized model embeddings to {len(tokenizer)}")
 
     # 准备 k-bit 训练
     model = prepare_model_for_kbit_training(model)
-
+    
     # 5. LoRA 配置
     peft_config = LoraConfig(
-        r=16,
+        r=8,
         lora_alpha=32,
         lora_dropout=0.05,
         bias="none",
         task_type="CAUSAL_LM",
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
-        # 重要：保存 Embedding 层和输出层，因为我们改了词表！
-        # 这会让这两个层参与全量训练（非 LoRA），显存占用会增加一些，但对于新 Token 是必须的。
+        # 回退：仅微调 Attention 层
+        target_modules=["q_proj", "v_proj", "o_proj"],
+        # 回退：全量训练 Embedding 和 Head，这是效果最好的方案
         modules_to_save=["embed_tokens", "lm_head"] 
     )
+    
+    # 应用 PEFT/LoRA 配置
+    model = get_peft_model(model, peft_config)
+    model.print_trainable_parameters()
+
+    # --- 恢复 Gradient Hook (为了防止遗忘旧知识) ---
+    def zero_out_old_token_grads_hook(grad):
+        if grad is None: return None
+        grad[:original_vocab_size] = 0
+        return grad
+
+    input_embeddings = model.get_input_embeddings()
+    output_embeddings = model.get_output_embeddings()
+    
+    if input_embeddings is not None and input_embeddings.weight.requires_grad:
+        input_embeddings.weight.register_hook(zero_out_old_token_grads_hook)
+    if output_embeddings is not None and output_embeddings.weight.requires_grad:
+        output_embeddings.weight.register_hook(zero_out_old_token_grads_hook)
 
     # 6. 训练参数
     training_args = TrainingArguments(
@@ -98,11 +125,18 @@ def main():
         learning_rate=LEARNING_RATE,
         num_train_epochs=NUM_EPOCHS,
         logging_steps=10,
-        save_strategy="epoch",
+        # 策略调整：中间不保存 Checkpoint，只在最后保存。
+        # 彻底解决保存时 RAM 爆炸导致的卡顿/死机问题。
+        save_strategy="no",
         eval_strategy="epoch",
         fp16=True,
-        optim="paged_adamw_32bit",
-        report_to="tensorboard",
+        # 使用 Unpaged 8-bit 优化器，在 768 长度下显存应该够用，且比 Paged 稳定
+        optim="adamw_bnb_8bit",
+        # 解决 Windows 上 Ctrl+C 卡死或保存时死锁的问题：强制单线程加载数据
+        dataloader_num_workers=0,
+        # 监控：使用 wandb
+        report_to="wandb",
+        run_name="qwen-motion-finetune-v2",
         # 开启梯度检查点，大幅节省显存
         gradient_checkpointing=True,
         gradient_checkpointing_kwargs={"use_reentrant": False},
@@ -121,7 +155,9 @@ def main():
     )
 
     print("Starting training...")
-    trainer.train(resume_from_checkpoint=RESUME_FROM_CHECKPOINT)
+    # 强制不使用 resume，避免 trainer_state.json 缺失报错
+    # 如果你想加载旧权重但重置进度，需要手动用 PeftModel.from_pretrained 加载
+    trainer.train(resume_from_checkpoint=False)
 
     print("Saving model...")
     trainer.save_model(OUTPUT_DIR)

@@ -9,8 +9,8 @@ from visualize_motion import parse_motion_tokens, plot_motion
 
 # Constants
 BASE_MODEL_NAME = "Qwen/Qwen2.5-1.5B-Instruct"
-ADAPTER_PATH = "Qwen-Motion-Finetuned"
-MAX_NEW_TOKENS = 4096 # Adjust based on your needs
+ADAPTER_PATH = "Qwen-Motion-Finetuned-v2/best_model"
+MAX_NEW_TOKENS = 1024 # Adjust based on your needs
 # 去掉 MEAN/STD，改用反量化参数
 BINS = 256
 # 假设的物理范围，KIT-ML 通常单位是毫米，范围大致在 -3000 到 3000 左右
@@ -32,6 +32,12 @@ def dequantize(motion_data, bins=BINS, v_min=V_MIN, v_max=V_MAX):
 def load_model():
     print("Loading tokenizer...")
     tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL_NAME, trust_remote_code=True)
+    
+    # --- 同步微调时的 Tokenizer 修改 ---
+    print("Adding new tokens <0>...<255> to tokenizer...")
+    new_tokens = [f"<{i}>" for i in range(256)]
+    tokenizer.add_tokens(new_tokens)
+    print(f"Added {len(new_tokens)} tokens.")
     
     print("Loading base model...")
     # Use 4-bit quantization if possible to match training environment, or load in full precision for inference
@@ -65,6 +71,10 @@ def load_model():
             torch_dtype=torch.float16,
             trust_remote_code=True
         )
+
+    # --- 同步微调时的 Embedding 调整 ---
+    print(f"Resizing embeddings to {len(tokenizer)}...")
+    model.resize_token_embeddings(len(tokenizer))
 
     print("Loading LoRA adapter...")
     model = PeftModel.from_pretrained(model, ADAPTER_PATH)
