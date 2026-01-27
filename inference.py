@@ -8,8 +8,8 @@ import numpy as np
 from visualize_motion import parse_motion_tokens, plot_motion
 
 # Constants
-BASE_MODEL_NAME = "Qwen/Qwen2.5-1.5B-Instruct"
-ADAPTER_PATH = "Qwen-Motion-Finetuned-v2/best_model"
+BASE_MODEL_NAME = "Qwen/Qwen3-0.6B"
+ADAPTER_PATH = "Qwen-Motion-Overfit-v5"  # v5 overfit 模型路径
 MAX_NEW_TOKENS = 1024 # Adjust based on your needs
 # 去掉 MEAN/STD，改用反量化参数
 BINS = 256
