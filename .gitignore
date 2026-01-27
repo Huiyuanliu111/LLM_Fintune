@@ -23,6 +23,14 @@ venv/
 *.ckpt
 checkpoint-*/
 
+Qwen-Motion-Overfit-v5/ 
+Qwen-Motion-Overfit-v6/
+Qwen-Motion-Overfit-v7/
+
+Generation/
+Qwen-Motion-Finetuned-v5/
+
+wandb/
 # Logs
 runs/
 logs/

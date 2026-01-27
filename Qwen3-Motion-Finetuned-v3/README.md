@@ -1,20 +1,16 @@
 ---
-base_model: Qwen/Qwen2.5-1.5B-Instruct
-library_name: peft
-model_name: Qwen-Motion-Finetuned
+library_name: transformers
+model_name: Qwen3-Motion-Finetuned-v3
 tags:
-- base_model:adapter:Qwen/Qwen2.5-1.5B-Instruct
-- lora
-- sft
-- transformers
+- generated_from_trainer
 - trl
+- sft
 licence: license
-pipeline_tag: text-generation
 ---
 
-# Model Card for Qwen-Motion-Finetuned
+# Model Card for Qwen3-Motion-Finetuned-v3
 
-This model is a fine-tuned version of [Qwen/Qwen2.5-1.5B-Instruct](https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct).
+This model is a fine-tuned version of [None](https://huggingface.co/None).
 It has been trained using [TRL](https://github.com/huggingface/trl).
 
 ## Quick start
@@ -30,14 +26,13 @@ print(output["generated_text"])
 
 ## Training procedure
 
- 
+[<img src="https://raw.githubusercontent.com/wandb/assets/main/wandb-github-badge-28.svg" alt="Visualize in Weights & Biases" width="150" height="24"/>](https://wandb.ai/huiyuan_tac/huggingface/runs/2ewlweds) 
 
 
 This model was trained with SFT.
 
 ### Framework versions
 
-- PEFT 0.18.0
 - TRL: 0.25.1
 - Transformers: 4.57.3
 - Pytorch: 2.5.1+cu121

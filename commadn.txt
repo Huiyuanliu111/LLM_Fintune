@@ -1,1 +1,22 @@
+uv run inference.py "A person walking forward"  
+
+uv run inference.py "A person running"  --output run.gif
+
+
 uv run tensorboard --logdir Qwen-Motion-Finetuned-v2/runs
+
+# 基本使用
+python inference.py "A person is walking forward"
+
+# 指定输出文件
+python inference_v3.py "A person jumping" --output my_motion.gif
+
+# 仅生成 Token，不可视化
+python inference_v3.py "A person running" --no_viz
+
+
+uv run python finetune_v3.py --resume_from_checkpoint Qwen3-Motion-Finetuned-v3/checkpoint-400 
+
+
+uv run python finetune_v5.py --resume_from_checkpoint
+

@@ -21,6 +21,7 @@ dependencies = [
     "matplotlib>=3.10.7",
     "moviepy<2.0.0",
     "wandb>=0.23.1",
+    "seaborn>=0.13.2",
 ]
 
 [[tool.uv.index]]
