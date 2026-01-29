@@ -22,13 +22,23 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from peft import PeftModel
 
 from eval.evaluator import MotionEvaluator
+from eval.metrics import calculate_batch_mse
+
+# 尝试导入 MDM evaluator
+try:
+    from eval.mdm_evaluator import MDMEvaluator, check_mdm_available
+    MDM_AVAILABLE = check_mdm_available()
+except ImportError:
+    MDM_AVAILABLE = False
 
 # 基础配置
 BASE_MODEL_NAME = "Qwen/Qwen3-0.6B"
 BINS = 256
-V_MIN = -3000.0
-V_MAX = 3000.0
 NUM_JOINTS = 21
+
+# 原始数据目录（用于获取真实的 min/max）
+RAW_MOTION_DIR = "KIT-ML/new_joints"
+DOWNSAMPLED_DIR = "KIT-ML/new_joints_40"
 
 # 版本配置
 # 注意：训练时的 MAX_SEQ_LENGTH 限制会截断数据！
@@ -70,13 +80,90 @@ VERSION_CONFIG = {
         "expected_frames": 10,  # 训练数据本身就是 10 帧（下采样 4x）
         "expected_tokens": 630,
     },
+    "v10": {
+        "adapter_path": "Qwen-Motion-Overfit-v10",
+        "data_dir": "KIT-ML/qwen_ready_v10",
+        "max_seq_length": 4096,  # 不截断
+        "expected_frames": 40,
+        "expected_tokens": 2520,  # 40 * 63
+        # v10 使用全局 min/max: V_MIN=-6429.9, V_MAX=7001.1
+    },
 }
 
 
-def dequantize(motion_data, bins=BINS, v_min=V_MIN, v_max=V_MAX):
-    """反量化"""
+def dequantize(motion_data, bins=BINS, v_min=None, v_max=None):
+    """
+    反量化
+    
+    Args:
+        motion_data: quantized motion data
+        bins: number of bins
+        v_min: min value (if None, cannot dequantize properly)
+        v_max: max value (if None, cannot dequantize properly)
+    """
+    if v_min is None or v_max is None:
+        raise ValueError("v_min and v_max must be provided for correct dequantization")
     norm = motion_data.astype(float) / (bins - 1)
     return (norm * (v_max - v_min)) + v_min
+
+
+def uniform_downsample(motion: np.ndarray, target_frames: int = 40) -> np.ndarray:
+    """均匀降采样"""
+    T = motion.shape[0]
+    if T <= target_frames:
+        return motion
+    idx = np.linspace(0, T - 1, target_frames).astype(int)
+    return motion[idx]
+
+
+def load_test_data_from_raw(text_dir, motion_dir, num_samples=None, max_frames=120):
+    """
+    直接从原始数据目录加载测试数据
+    
+    Returns:
+        list of dict with keys: motion_id, text, raw_motion, v_min, v_max
+    """
+    from glob import glob
+    
+    # 找到所有配对的数据
+    motion_files = sorted(glob(os.path.join(motion_dir, "*.npy")))
+    
+    test_data = []
+    for motion_path in motion_files:
+        motion_id = os.path.splitext(os.path.basename(motion_path))[0]
+        text_path = os.path.join(text_dir, f"{motion_id}.txt")
+        
+        if not os.path.exists(text_path):
+            continue
+        
+        # 加载原始 motion
+        raw_motion = np.load(motion_path)
+        
+        # 跳过太长的序列
+        if raw_motion.shape[0] > max_frames:
+            continue
+        
+        # 加载文本
+        with open(text_path, "r", encoding="utf-8") as f:
+            first_line = f.readline().strip()
+        text = first_line.split("#")[0]
+        
+        # 计算该文件的 min/max（用于正确 dequantize）
+        v_min = float(raw_motion.min())
+        v_max = float(raw_motion.max())
+        
+        test_data.append({
+            'motion_id': motion_id,
+            'text': text,
+            'raw_motion': raw_motion,
+            'v_min': v_min,
+            'v_max': v_max,
+        })
+    
+    if num_samples:
+        test_data = test_data[:num_samples]
+    
+    return test_data
 
 
 def load_model(adapter_path, use_4bit=True):
@@ -230,12 +317,21 @@ def generate_motion(model, tokenizer, text, max_new_tokens=4096):
 def main():
     parser = argparse.ArgumentParser(description="Evaluate motion generation model")
     parser.add_argument("--version", type=str, required=True, choices=list(VERSION_CONFIG.keys()))
-    parser.add_argument("--num_samples", type=int, default=5)
+    parser.add_argument("--num_samples", type=int, default=10)
     parser.add_argument("--output_dir", type=str, default="eval_results")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--use_mdm", action="store_true", help="Use MDM pretrained evaluator for FID (requires downloading MDM models)")
     
     args = parser.parse_args()
+    
+    # 检查 MDM 可用性
+    use_mdm = args.use_mdm and MDM_AVAILABLE
+    if args.use_mdm and not MDM_AVAILABLE:
+        print("Warning: --use_mdm specified but MDM evaluator not available.")
+        print("Please download MDM models first:")
+        print("  cd ../motion-diffusion-model && bash prepare/download_t2m_evaluators.sh")
+        print("Falling back to statistical features...")
     
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -261,7 +357,7 @@ def main():
     print(f"{'='*60}")
     model, tokenizer = load_model(config['adapter_path'])
     
-    # 加载测试数据
+    # 加载测试数据（从 JSONL）
     print(f"\n{'='*60}")
     print("Loading Test Data")
     print(f"{'='*60}")
@@ -281,9 +377,14 @@ def main():
     
     # 计算训练时的最大帧数（模拟截断）
     max_frames = config['expected_frames']
-    # 根据版本配置设置生成的最大 token 数（v6/v7 用 1024，其他用 expected_tokens + 余量）
+    # 根据版本配置设置生成的最大 token 数
     max_gen_tokens = config['max_seq_length'] if config['max_seq_length'] <= 1024 else config['expected_tokens'] + 100
     print(f"Max generation tokens: {max_gen_tokens}")
+    print(f"Max frames: {max_frames}")
+    
+    # 使用固定的 dequantize 范围（GT 和 Gen 相同，确保公平比较）
+    V_MIN_FIXED = -3000.0
+    V_MAX_FIXED = 3000.0
     
     for i, sample in enumerate(tqdm(test_data, desc="Evaluating")):
         text = sample['text']
@@ -295,29 +396,38 @@ def main():
             fail_count += 1
             continue
         
-        # 生成（使用版本对应的 max_new_tokens）
+        # 生成
         gen_response = generate_motion(model, tokenizer, text, max_new_tokens=max_gen_tokens)
-        gen_motion = parse_motion_tokens(gen_response)
+        gen_motion = parse_motion_tokens(gen_response, max_frames=max_frames)
         
         if gen_motion is None:
-            if args.verbose:
-                print(f"\n[{i}] FAILED: {text[:50]}...")
-                print(f"    Response: {gen_response[:100]}...")
+            # 总是打印失败原因
+            print(f"\n[{i}] FAILED: {text[:50]}...")
+            print(f"    Response (first 200): {gen_response[:200]}...")
+            print(f"    Response length: {len(gen_response)}")
             fail_count += 1
             continue
         
-        # 反量化
-        gt_motion_dq = dequantize(gt_motion)
-        gen_motion_dq = dequantize(gen_motion)
+        # 使用相同的 dequantize（GT 和 Gen 一致）
+        gt_motion_dq = dequantize(gt_motion, v_min=V_MIN_FIXED, v_max=V_MAX_FIXED)
+        gen_motion_dq = dequantize(gen_motion, v_min=V_MIN_FIXED, v_max=V_MAX_FIXED)
+        
+        # 调试：检查 tokens 是否匹配
+        if i == 0 or args.verbose:
+            gt_flat = gt_motion.flatten()
+            gen_flat = gen_motion.flatten()
+            min_len = min(len(gt_flat), len(gen_flat))
+            token_match = np.sum(gt_flat[:min_len] == gen_flat[:min_len])
+            print(f"\n[{i}] Debug:")
+            print(f"    GT tokens (first 20): {gt_flat[:20]}")
+            print(f"    Gen tokens (first 20): {gen_flat[:20]}")
+            print(f"    Token match: {token_match}/{min_len} ({100*token_match/min_len:.1f}%)")
+            print(f"    GT shape: {gt_motion.shape}, Gen shape: {gen_motion.shape}")
         
         gt_motions.append(gt_motion_dq)
         gen_motions.append(gen_motion_dq)
         texts.append(text)
         success_count += 1
-        
-        if args.verbose and i % 10 == 0:
-            print(f"\n[{i}] {text[:40]}...")
-            print(f"    GT: {gt_motion.shape}, Gen: {gen_motion.shape}")
         
         # 保存
         np.save(os.path.join(output_dir, f"gen_{i:04d}.npy"), gen_motion_dq)
@@ -334,13 +444,37 @@ def main():
     print("Computing Metrics")
     print(f"{'='*60}")
     
-    evaluator = MotionEvaluator(num_joints=NUM_JOINTS, seed=args.seed)
-    results = evaluator.evaluate_all(
-        gt_motions=gt_motions,
-        gen_motions=gen_motions,
-        texts=texts,
-        compute_mm=False,
-    )
+    # 计算 MSE（对于 overfit 模型最重要的指标）
+    print("\n[MSE] Computing MSE between GT and Generated...")
+    mse_results = calculate_batch_mse(gt_motions, gen_motions)
+    print(f"MSE: {mse_results['MSE_mean']:.4f} ± {mse_results['MSE_std']:.4f}")
+    print(f"MAE: {mse_results['MAE_mean']:.4f} ± {mse_results['MAE_std']:.4f}")
+    print(f"RMSE: {mse_results['RMSE_mean']:.4f} ± {mse_results['RMSE_std']:.4f}")
+    
+    # 选择 evaluator
+    if use_mdm:
+        print("\n[FID] Using MDM pretrained evaluator...")
+        mdm_evaluator = MDMEvaluator('kit', 'cuda' if torch.cuda.is_available() else 'cpu')
+        results = mdm_evaluator.evaluate_all(gt_motions, gen_motions)
+        results['evaluator'] = 'MDM_pretrained'
+        # MDM 不计算 Matching Score 和 R-precision（需要文本嵌入）
+        results['Matching_Score'] = None
+        results['R_precision_top1'] = None
+        results['R_precision_top2'] = None
+        results['R_precision_top3'] = None
+    else:
+        print("\n[FID] Using statistical feature evaluator...")
+        evaluator = MotionEvaluator(num_joints=NUM_JOINTS, seed=args.seed)
+        results = evaluator.evaluate_all(
+            gt_motions=gt_motions,
+            gen_motions=gen_motions,
+            texts=texts,
+            compute_mm=False,
+        )
+        results['evaluator'] = 'statistical_features'
+    
+    # 添加 MSE 结果
+    results.update(mse_results)
     
     # 添加统计
     results['version'] = args.version
@@ -357,23 +491,47 @@ def main():
     
     # 保存结果
     results_path = os.path.join(output_dir, 'results.json')
-    evaluator.save_results(results, results_path)
+    # 保存为 JSON
+    import json
+    serializable = {}
+    for key, value in results.items():
+        if isinstance(value, np.ndarray):
+            serializable[key] = value.tolist()
+        elif isinstance(value, (np.float32, np.float64)):
+            serializable[key] = float(value)
+        elif isinstance(value, dict):
+            serializable[key] = {
+                k: float(v) if isinstance(v, (np.float32, np.float64)) else v
+                for k, v in value.items()
+            }
+        else:
+            serializable[key] = value
+    serializable['timestamp'] = datetime.now().isoformat()
+    
+    with open(results_path, 'w', encoding='utf-8') as f:
+        json.dump(serializable, f, indent=2, ensure_ascii=False)
     
     # 打印结果
     print(f"\n{'='*60}")
     print(f"FINAL RESULTS - {args.version.upper()}")
     print(f"{'='*60}")
+    print(f"Evaluator: {results.get('evaluator', 'unknown')}")
     print(f"Success rate: {results['success_rate']*100:.1f}% ({success_count}/{len(test_data)})")
     print(f"Expected frames: {config['expected_frames']}")
     print(f"GT avg frames: {results['GT_avg_frames']:.1f}")
     print(f"Gen avg frames: {results['Gen_avg_frames']:.1f}")
     print(f"Frame ratio: {results['frame_ratio']:.2f}")
+    print(f"\n--- Direct Comparison (Lower = Better) ---")
+    print(f"MSE: {results['MSE_mean']:.4f} ± {results['MSE_std']:.4f}")
+    print(f"MAE: {results['MAE_mean']:.4f} ± {results['MAE_std']:.4f}")
+    print(f"RMSE: {results['RMSE_mean']:.4f} ± {results['RMSE_std']:.4f}")
+    print(f"\n--- Distribution Metrics (FID from {results.get('evaluator', 'unknown')}) ---")
     print(f"FID: {results['FID']:.4f}")
     print(f"GT Diversity: {results['GT_Diversity']:.4f}")
     print(f"Gen Diversity: {results['Gen_Diversity']:.4f}")
-    if results['Matching_Score'] is not None:
+    if results.get('Matching_Score') is not None:
         print(f"Matching Score: {results['Matching_Score']:.4f}")
-    if results['R_precision_top1'] is not None:
+    if results.get('R_precision_top1') is not None:
         print(f"R-precision: Top1={results['R_precision_top1']:.4f}, Top2={results['R_precision_top2']:.4f}, Top3={results['R_precision_top3']:.4f}")
     print(f"{'='*60}")
     print(f"Results saved to: {output_dir}")

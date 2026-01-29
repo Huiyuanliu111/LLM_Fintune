@@ -297,6 +297,77 @@ def calculate_matching_score(
     return float(matching_score)
 
 
+def calculate_mse(gt_motion: np.ndarray, gen_motion: np.ndarray) -> dict:
+    """
+    计算生成动作与真实动作之间的误差指标
+    
+    Args:
+        gt_motion: (T, J, 3) 真实动作
+        gen_motion: (T, J, 3) 生成动作
+    
+    Returns:
+        metrics: 包含 MSE, MAE, RMSE 等
+    """
+    # 对齐长度（取较短的）
+    min_len = min(len(gt_motion), len(gen_motion))
+    gt = gt_motion[:min_len]
+    gen = gen_motion[:min_len]
+    
+    # 计算误差
+    diff = gt - gen
+    mse = float(np.mean(diff ** 2))
+    mae = float(np.mean(np.abs(diff)))
+    rmse = float(np.sqrt(mse))
+    
+    # 计算每帧的误差
+    per_frame_mse = np.mean(diff ** 2, axis=(1, 2))
+    
+    # 计算每关节的误差
+    per_joint_mse = np.mean(diff ** 2, axis=(0, 2))
+    
+    return {
+        'MSE': mse,
+        'MAE': mae,
+        'RMSE': rmse,
+        'per_frame_mse_mean': float(np.mean(per_frame_mse)),
+        'per_frame_mse_std': float(np.std(per_frame_mse)),
+        'per_joint_mse_mean': float(np.mean(per_joint_mse)),
+        'per_joint_mse_max': float(np.max(per_joint_mse)),
+        'length_match': min_len == len(gt_motion) == len(gen_motion),
+    }
+
+
+def calculate_batch_mse(gt_motions: list, gen_motions: list) -> dict:
+    """
+    批量计算 MSE
+    
+    Args:
+        gt_motions: 真实动作列表
+        gen_motions: 生成动作列表
+    
+    Returns:
+        aggregated metrics
+    """
+    all_mse = []
+    all_mae = []
+    all_rmse = []
+    
+    for gt, gen in zip(gt_motions, gen_motions):
+        metrics = calculate_mse(gt, gen)
+        all_mse.append(metrics['MSE'])
+        all_mae.append(metrics['MAE'])
+        all_rmse.append(metrics['RMSE'])
+    
+    return {
+        'MSE_mean': float(np.mean(all_mse)),
+        'MSE_std': float(np.std(all_mse)),
+        'MAE_mean': float(np.mean(all_mae)),
+        'MAE_std': float(np.std(all_mae)),
+        'RMSE_mean': float(np.mean(all_rmse)),
+        'RMSE_std': float(np.std(all_rmse)),
+    }
+
+
 def calculate_motion_statistics(motion_data: np.ndarray) -> dict:
     """
     计算动作数据的基础统计信息

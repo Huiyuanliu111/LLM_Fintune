@@ -10,12 +10,11 @@ wheels/
 .venv
 env/
 venv/
-eval_results/
 diagnose/
 # IDE settings
 .vscode/
 .idea/
-
+kit/
 # Model files and Checkpoints
 *.pt
 *.pth
@@ -23,6 +22,7 @@ diagnose/
 *.bin
 *.ckpt
 checkpoint-*/
+*.npy
 
 Qwen-Motion-Overfit-v5/ 
 Qwen-Motion-Overfit-v6/
