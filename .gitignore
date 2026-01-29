@@ -10,7 +10,8 @@ wheels/
 .venv
 env/
 venv/
-
+eval_results/
+diagnose/
 # IDE settings
 .vscode/
 .idea/
