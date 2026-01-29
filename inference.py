@@ -1,5 +1,5 @@
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, TextStreamer
+from transformers import AutoModelForCausalLM, AutoTokenizer, TextStreamer, BitsAndBytesConfig
 from peft import PeftModel
 import argparse
 import sys
@@ -9,7 +9,7 @@ from visualize_motion import parse_motion_tokens, plot_motion
 
 # Constants
 BASE_MODEL_NAME = "Qwen/Qwen3-0.6B"
-ADAPTER_PATH = "Qwen-Motion-Overfit-v5"  # v5 overfit 模型路径
+ADAPTER_PATH = "Qwen-Motion-Overfit-v6"  # v6 overfit 模型路径
 MAX_NEW_TOKENS = 1024 # Adjust based on your needs
 # 去掉 MEAN/STD，改用反量化参数
 BINS = 256
@@ -39,38 +39,20 @@ def load_model():
     tokenizer.add_tokens(new_tokens)
     print(f"Added {len(new_tokens)} tokens.")
     
-    print("Loading base model...")
-    # Use 4-bit quantization if possible to match training environment, or load in full precision for inference
-    # Here we try to load it in a way that fits in memory. 
-    try:
-        # from transformers import BitsAndBytesConfig
-        # quantization_config = BitsAndBytesConfig(
-        #     load_in_4bit=True,
-        #     bnb_4bit_quant_type="nf4",
-        #     bnb_4bit_compute_dtype=torch.float16,
-        # )
-        # model = AutoModelForCausalLM.from_pretrained(
-        #     BASE_MODEL_NAME,
-        #     quantization_config=quantization_config,
-        #     device_map="auto",
-        #     trust_remote_code=True
-        # )
-        # 如果显存足够，直接使用 fp16 加载，推理速度会快很多
-        print("Loading model in float16 for faster inference...")
-        model = AutoModelForCausalLM.from_pretrained(
-            BASE_MODEL_NAME,
-            device_map="auto",
-            torch_dtype=torch.float16,
-            trust_remote_code=True
-        )
-    except ImportError:
-        print("bitsandbytes not found, loading in float16...")
-        model = AutoModelForCausalLM.from_pretrained(
-            BASE_MODEL_NAME,
-            device_map="auto",
-            torch_dtype=torch.float16,
-            trust_remote_code=True
-        )
+    # 使用 4-bit 量化加载（与训练时一致！这是关键！）
+    print("Loading base model with 4-bit quantization (same as training)...")
+    bnb_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=torch.float16,
+        bnb_4bit_use_double_quant=True,
+    )
+    model = AutoModelForCausalLM.from_pretrained(
+        BASE_MODEL_NAME,
+        quantization_config=bnb_config,
+        device_map="auto",
+        trust_remote_code=True
+    )
 
     # --- 同步微调时的 Embedding 调整 ---
     print(f"Resizing embeddings to {len(tokenizer)}...")
@@ -125,7 +107,7 @@ def main():
     parser = argparse.ArgumentParser(description="Generate motion sequences from text descriptions.")
     parser.add_argument("prompt", type=str, help="Text description of the motion (e.g., 'A person walks forward')")
     # 确保输出目录存在
-    output_dir = "Generation"
+    output_dir = "Generation/v6"
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
     

@@ -3,9 +3,9 @@ import re
 import os
 
 # 配置
-INPUT_DIR = "KIT-ML/qwen_ready_v3"
-OUTPUT_DIR = "KIT-ML/qwen_ready_v4"
-FILES = ["train_v3.jsonl", "val_v3.jsonl"]
+INPUT_DIR = "KIT-ML/qwen_ready_v8"
+OUTPUT_DIR = "KIT-ML/qwen_ready_v9"
+FILES = ["train_v9.jsonl", "val_v9.jsonl"]
 TOKENS_PER_FRAME = 63
 DOWNSAMPLE_RATE = 4  # 每4帧取1帧
 

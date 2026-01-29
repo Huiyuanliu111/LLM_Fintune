@@ -1,5 +1,5 @@
 """
-Overfit 测试脚本 - 在 v5 子集（10条数据）上验证模型能否过拟合
+Overfit 测试脚本 - 在 v9 子集（10条数据）上验证模型能否过拟合
 基于 finetune_v2.py 修改，极限显存优化版
 """
 import os
@@ -13,11 +13,10 @@ from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     BitsAndBytesConfig,
-    TrainingArguments,
     TrainerCallback,
 )
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
-from trl import SFTTrainer
+from trl import SFTTrainer, SFTConfig
 import transformers.utils.import_utils
 
 
@@ -82,8 +81,8 @@ transformers.utils.import_utils.check_torch_load_is_safe = no_op
 
 # --- 配置参数 (与 v3 保持一致，仅数据集不同) ---
 MODEL_NAME = "Qwen/Qwen3-0.6B"
-DATA_PATH = "KIT-ML/qwen_ready_v5"
-OUTPUT_DIR = "Qwen-Motion-Overfit-v5"
+DATA_PATH = "KIT-ML/qwen_ready_v9"
+OUTPUT_DIR = "Qwen-Motion-Overfit-v9"
 MAX_SEQ_LENGTH = 4096   # 足够容纳40帧数据（实际2569 tokens）
 BATCH_SIZE = 1
 GRAD_ACCUMULATION = 8   # 与 v2 一致
@@ -95,8 +94,8 @@ def main():
     # 1. 加载数据集
     print(f"Loading data from {DATA_PATH}...")
     dataset = load_dataset("json", data_files={
-        "train": os.path.join(DATA_PATH, "train_v5.jsonl"),
-        "validation": os.path.join(DATA_PATH, "val_v5.jsonl")
+        "train": os.path.join(DATA_PATH, "train_v9.jsonl"),
+        "validation": os.path.join(DATA_PATH, "val_v9.jsonl")
     })
     
     print(f"Train samples: {len(dataset['train'])}")
@@ -175,7 +174,7 @@ def main():
     model.print_trainable_parameters()
 
     # --- 梯度 hook：只训练新 token ---
-    # 这是 v2 能跑而 v5 掉卡的关键原因！
+    # 这是 v2 能跑而 v9 掉卡的关键原因！
     # 没有 hook：训练 151921 个 token 的 embedding (467M 参数)
     # 有 hook：只训练 256 个新 token 的 embedding (0.8M 参数)
     def zero_out_old_token_grads_hook(grad):
@@ -202,8 +201,8 @@ def main():
     if torch.cuda.is_available():
         print(f"[DEBUG] CUDA Mem after PEFT: {torch.cuda.memory_allocated()/1024**2:.2f}MB")
 
-    # 6. 训练参数 (极限显存优化)
-    training_args = TrainingArguments(
+    # 6. 训练参数 (使用 SFTConfig 支持 max_length)
+    training_args = SFTConfig(
         output_dir=OUTPUT_DIR,
         per_device_train_batch_size=BATCH_SIZE,
         gradient_accumulation_steps=GRAD_ACCUMULATION,
@@ -224,7 +223,7 @@ def main():
         dataloader_num_workers=0,
         # 禁用 wandb 节省内存
         report_to="wandb",
-        run_name="qwen-motion-overfit-v5",
+        run_name="qwen-motion-overfit-v9",
         # 梯度检查点
         gradient_checkpointing=True,
         gradient_checkpointing_kwargs={"use_reentrant": False},
@@ -235,6 +234,8 @@ def main():
         # 额外优化
         dataloader_pin_memory=False,  # 禁用 pin memory
         per_device_eval_batch_size=1,
+        # 关键！设置最大序列长度，确保 2569 tokens 不被截断
+        max_length=MAX_SEQ_LENGTH,
     )
 
     # 创建回调
@@ -271,7 +272,7 @@ def main():
     )
 
     print("="*60)
-    print("OVERFIT TEST: Training on single episode (v8)")
+    print("OVERFIT TEST: Training on single episode (v9)")
     print("Memory cleanup: every 50 steps")
     print(f"Safe stop: create file '{OUTPUT_DIR}/STOP' to stop training")
     print(f"Max seq length: {MAX_SEQ_LENGTH}")

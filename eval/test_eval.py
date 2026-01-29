@@ -54,7 +54,7 @@ def test_metrics():
     assert dist_mat.shape == (10, 10), f"Expected (10, 10), got {dist_mat.shape}"
     print(f"  Distance matrix shape: {dist_mat.shape}")
     print(f"  Distance range: [{dist_mat.min():.2f}, {dist_mat.max():.2f}]")
-    print("  PASSED ✓")
+    print("  PASSED")
     
     # 测试 FID
     print("\n[2] Testing calculate_fid...")
@@ -63,7 +63,7 @@ def test_metrics():
     fid = calculate_fid(gt_features, gen_features)
     assert fid >= 0, f"FID should be non-negative, got {fid}"
     print(f"  FID: {fid:.4f}")
-    print("  PASSED ✓")
+    print("  PASSED")
     
     # 测试 Diversity
     print("\n[3] Testing calculate_diversity...")
@@ -71,7 +71,7 @@ def test_metrics():
     diversity = calculate_diversity(features, diversity_times=100)
     assert diversity >= 0, f"Diversity should be non-negative, got {diversity}"
     print(f"  Diversity: {diversity:.4f}")
-    print("  PASSED ✓")
+    print("  PASSED")
     
     # 测试 MultiModality
     print("\n[4] Testing calculate_multimodality...")
@@ -79,7 +79,7 @@ def test_metrics():
     mm = calculate_multimodality(features_3d, num_times=5)
     assert mm >= 0, f"MultiModality should be non-negative, got {mm}"
     print(f"  MultiModality: {mm:.4f}")
-    print("  PASSED ✓")
+    print("  PASSED")
     
     # 测试 Matching Score
     print("\n[5] Testing calculate_matching_score...")
@@ -88,7 +88,7 @@ def test_metrics():
     ms = calculate_matching_score(text_feat, motion_feat)
     assert ms >= 0, f"Matching Score should be non-negative, got {ms}"
     print(f"  Matching Score: {ms:.4f}")
-    print("  PASSED ✓")
+    print("  PASSED")
     
     # 测试 R-precision
     print("\n[6] Testing calculate_r_precision...")
@@ -96,7 +96,7 @@ def test_metrics():
     assert len(r_prec) == 3, f"Expected 3 values, got {len(r_prec)}"
     assert all(0 <= p <= 1 for p in r_prec), "R-precision values should be in [0, 1]"
     print(f"  R-precision: Top-1={r_prec[0]:.4f}, Top-2={r_prec[1]:.4f}, Top-3={r_prec[2]:.4f}")
-    print("  PASSED ✓")
+    print("  PASSED")
     
     # 测试动作统计
     print("\n[7] Testing calculate_motion_statistics...")
@@ -104,7 +104,7 @@ def test_metrics():
     stats = calculate_motion_statistics(motion)
     print(f"  Stats keys: {list(stats.keys())}")
     print(f"  Mean velocity: {stats['mean_velocity']:.4f}")
-    print("  PASSED ✓")
+    print("  PASSED")
 
 
 def test_feature_extractor():
@@ -123,7 +123,7 @@ def test_feature_extractor():
     assert features.shape == (256,), f"Expected (256,), got {features.shape}"
     print(f"  Input motion shape: {motion.shape}")
     print(f"  Output feature shape: {features.shape}")
-    print("  PASSED ✓")
+    print("  PASSED")
     
     # 批量提取
     print("\n[2] Testing batch extraction...")
@@ -133,7 +133,7 @@ def test_feature_extractor():
     assert batch_features.shape == (10, 256), f"Expected (10, 256), got {batch_features.shape}"
     print(f"  Batch input: {len(motions)} motions")
     print(f"  Batch output shape: {batch_features.shape}")
-    print("  PASSED ✓")
+    print("  PASSED")
     
     # 测试 Text Feature Extractor
     print("\n[3] Testing SimpleTextFeatureExtractor...")
@@ -145,7 +145,7 @@ def test_feature_extractor():
     assert features.shape == (256,), f"Expected (256,), got {features.shape}"
     print(f"  Input text: '{text}'")
     print(f"  Output feature shape: {features.shape}")
-    print("  PASSED ✓")
+    print("  PASSED")
     
     # 批量提取
     print("\n[4] Testing batch text extraction...")
@@ -160,7 +160,7 @@ def test_feature_extractor():
     assert batch_features.shape == (4, 256), f"Expected (4, 256), got {batch_features.shape}"
     print(f"  Batch input: {len(texts)} texts")
     print(f"  Batch output shape: {batch_features.shape}")
-    print("  PASSED ✓")
+    print("  PASSED")
 
 
 def test_evaluator():
@@ -235,7 +235,7 @@ def test_evaluator():
         elif isinstance(value, dict):
             print(f"    {key}: <dict with {len(value)} keys>")
     
-    print("\n  PASSED ✓")
+    print("\n  PASSED")
 
 
 def main():
@@ -249,7 +249,7 @@ def main():
         test_evaluator()
         
         print("\n" + "=" * 60)
-        print("ALL TESTS PASSED! ✓")
+        print("ALL TESTS PASSED!")
         print("=" * 60)
         
     except AssertionError as e:

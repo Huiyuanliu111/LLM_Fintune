@@ -49,7 +49,8 @@ class MotionFeatureExtractor:
         use_velocity: bool = True,
         use_acceleration: bool = True,
         use_bone_features: bool = True,
-        pooling: str = 'mean'  # 'mean', 'max', 'concat'
+        pooling: str = 'mean',  # 'mean', 'max', 'concat'
+        normalize: bool = True,  # 是否对输入数据进行标准化
     ):
         """
         Args:
@@ -59,6 +60,7 @@ class MotionFeatureExtractor:
             use_acceleration: 是否使用加速度特征
             use_bone_features: 是否使用骨骼特征
             pooling: 时序聚合方式
+            normalize: 是否对输入数据进行标准化
         """
         self.num_joints = num_joints
         self.feature_dim = feature_dim
@@ -66,6 +68,7 @@ class MotionFeatureExtractor:
         self.use_acceleration = use_acceleration
         self.use_bone_features = use_bone_features
         self.pooling = pooling
+        self.normalize = normalize
     
     def extract_features(self, motion: np.ndarray) -> np.ndarray:
         """
@@ -79,6 +82,15 @@ class MotionFeatureExtractor:
         """
         if len(motion.shape) != 3:
             raise ValueError(f"Expected (T, J, 3) input, got {motion.shape}")
+        
+        # 标准化：减均值除标准差，使数值在合理范围内
+        if self.normalize:
+            mean = motion.mean()
+            std = motion.std()
+            if std > 1e-8:
+                motion = (motion - mean) / std
+            else:
+                motion = motion - mean
         
         T, J, _ = motion.shape
         features_list = []
@@ -116,6 +128,11 @@ class MotionFeatureExtractor:
         elif len(all_features) > self.feature_dim:
             # PCA 或简单截断
             all_features = all_features[:self.feature_dim]
+        
+        # L2 归一化，使特征向量长度为 1
+        norm = np.linalg.norm(all_features)
+        if norm > 1e-8:
+            all_features = all_features / norm
         
         return all_features
     
@@ -363,6 +380,11 @@ class SimpleTextFeatureExtractor:
             features = np.pad(features, (0, self.feature_dim - len(features)))
         elif len(features) > self.feature_dim:
             features = features[:self.feature_dim]
+        
+        # L2 归一化
+        norm = np.linalg.norm(features)
+        if norm > 1e-8:
+            features = features / norm
         
         return features
     
