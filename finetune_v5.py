@@ -84,11 +84,11 @@ transformers.utils.import_utils.check_torch_load_is_safe = no_op
 MODEL_NAME = "Qwen/Qwen3-0.6B"
 DATA_PATH = "KIT-ML/qwen_ready_v5"
 OUTPUT_DIR = "Qwen-Motion-Overfit-v5"
-MAX_SEQ_LENGTH = 700
+MAX_SEQ_LENGTH = 4096   # 足够容纳40帧数据（实际2569 tokens）
 BATCH_SIZE = 1
 GRAD_ACCUMULATION = 8   # 与 v2 一致
 LEARNING_RATE = 2e-4    # 与 v2 一致
-NUM_EPOCHS = 500        # 10条数据，50轮足够 overfit
+NUM_EPOCHS = 2000       # 单个episode完全过拟合，需要更多epoch
 RESUME_FROM_CHECKPOINT = False  # 设为 True 自动恢复，或设为 checkpoint 路径
 
 def main():
@@ -106,6 +106,9 @@ def main():
     print("Loading Tokenizer...")
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, trust_remote_code=True)
     tokenizer.pad_token = tokenizer.eos_token
+    # 设置 tokenizer 的最大长度（关键！控制序列截断）
+    tokenizer.model_max_length = MAX_SEQ_LENGTH
+    print(f"Set tokenizer.model_max_length to {MAX_SEQ_LENGTH}")
     
     # --- 添加新 Token ---
     print("Adding new tokens <0>...<255> to tokenizer...")
@@ -238,6 +241,24 @@ def main():
     memory_callback = MemoryCleanupCallback(cleanup_every_n_steps=50)
     safe_stop_callback = SafeStopCallback(output_dir=OUTPUT_DIR)
     
+    # 验证数据长度（训练前检查）
+    print("\n" + "="*60)
+    print("DATA VERIFICATION:")
+    sample = dataset["train"][0]
+    sample_text = tokenizer.apply_chat_template(
+        sample["messages"],
+        tokenize=False,
+        add_generation_prompt=False
+    )
+    sample_tokens = tokenizer.encode(sample_text, add_special_tokens=False)
+    print(f"Sample length: {len(sample_tokens)} tokens")
+    print(f"Tokenizer max length: {tokenizer.model_max_length}")
+    if len(sample_tokens) > tokenizer.model_max_length:
+        print(f"⚠️  WARNING: Sample will be TRUNCATED by {len(sample_tokens) - tokenizer.model_max_length} tokens!")
+    else:
+        print(f"✓ Sample fits within max length (buffer: {tokenizer.model_max_length - len(sample_tokens)} tokens)")
+    print("="*60 + "\n")
+    
     # 与 v2 一致：传递 peft_config 给 SFTTrainer
     trainer = SFTTrainer(
         model=model,
@@ -250,11 +271,14 @@ def main():
     )
 
     print("="*60)
-    print("OVERFIT TEST: Training on 10 samples (v2-compatible Mode)")
+    print("OVERFIT TEST: Training on single episode (v8)")
     print("Memory cleanup: every 50 steps")
     print(f"Safe stop: create file '{OUTPUT_DIR}/STOP' to stop training")
     print(f"Max seq length: {MAX_SEQ_LENGTH}")
+    print(f"Batch size: {BATCH_SIZE}")
     print(f"Grad accumulation: {GRAD_ACCUMULATION}")
+    print(f"Learning rate: {LEARNING_RATE}")
+    print(f"Epochs: {NUM_EPOCHS}")
     print(f"LoRA r: {peft_config.r}")
     print("Expected: Train loss should drop to near 0")
     print("="*60)
