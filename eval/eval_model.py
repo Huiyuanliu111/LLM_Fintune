@@ -39,6 +39,66 @@ NUM_JOINTS = 21
 # 原始数据目录（用于获取真实的 min/max）
 RAW_MOTION_DIR = "KIT-ML/new_joints"
 DOWNSAMPLED_DIR = "KIT-ML/new_joints_40"
+TEXTS_DIR = "KIT-ML/texts"
+
+
+def build_text_to_motion_id_map(texts_dir=TEXTS_DIR):
+    """
+    建立 文本 -> motion_id 的映射
+    
+    Returns:
+        dict: {text: motion_id}
+    """
+    from pathlib import Path
+    
+    text_to_id = {}
+    texts_path = Path(texts_dir)
+    
+    if not texts_path.exists():
+        print(f"Warning: texts directory not found: {texts_dir}")
+        return text_to_id
+    
+    for txt_file in texts_path.glob("*.txt"):
+        motion_id = txt_file.stem  # e.g., "00001"
+        
+        with open(txt_file, 'r', encoding='utf-8') as f:
+            content = f.read().strip()
+        
+        # 一个文件可能有多行文本描述
+        for line in content.split('\n'):
+            if not line.strip():
+                continue
+            # 格式：text#POS_tags#score1#score2
+            text = line.split('#')[0].strip()
+            if text:
+                text_to_id[text] = motion_id
+    
+    print(f"Built text->motion_id mapping with {len(text_to_id)} entries")
+    return text_to_id
+
+
+def get_motion_minmax(motion_id, raw_dir=DOWNSAMPLED_DIR):
+    """
+    从原始 .npy 文件获取 min/max
+    
+    Args:
+        motion_id: motion ID (e.g., "00001")
+        raw_dir: directory containing raw .npy files
+    
+    Returns:
+        raw_motion, v_min, v_max (or None, None, None if not found)
+    """
+    raw_path = os.path.join(raw_dir, f"{motion_id}.npy")
+    if not os.path.exists(raw_path):
+        # 尝试不带前导零的版本
+        raw_path = os.path.join(raw_dir, f"{int(motion_id)}.npy")
+        if not os.path.exists(raw_path):
+            return None, None, None
+    
+    raw_motion = np.load(raw_path)
+    v_min = float(raw_motion.min())
+    v_max = float(raw_motion.max())
+    return raw_motion, v_min, v_max
 
 # 版本配置
 # 注意：训练时的 MAX_SEQ_LENGTH 限制会截断数据！
@@ -48,9 +108,9 @@ VERSION_CONFIG = {
     "v5": {
         "adapter_path": "Qwen-Motion-Overfit-v5",
         "data_dir": "KIT-ML/qwen_ready_v5",
-        "max_seq_length": 4096,  # 不截断
-        "expected_frames": 40,
-        "expected_tokens": 2520,
+        "max_seq_length": 1024,  # 截断到 16 帧，与 v6 公平比较
+        "expected_frames": 16,   # 16 帧
+        "expected_tokens": 1008, # 16 * 63
     },
     "v6": {
         "adapter_path": "Qwen-Motion-Overfit-v6",
@@ -364,6 +424,12 @@ def main():
     test_data = load_test_data_from_jsonl(config['data_dir'], args.version, args.num_samples)
     print(f"Loaded {len(test_data)} samples")
     
+    # 构建 text -> motion_id 映射（用于获取正确的 min/max）
+    print(f"\n{'='*60}")
+    print("Building Text to Motion ID Mapping")
+    print(f"{'='*60}")
+    text_to_motion_id = build_text_to_motion_id_map()
+    
     # 评估
     print(f"\n{'='*60}")
     print("Generating and Evaluating")
@@ -374,6 +440,7 @@ def main():
     texts = []
     success_count = 0
     fail_count = 0
+    minmax_info = []  # 记录每个样本的 min/max
     
     # 计算训练时的最大帧数（模拟截断）
     max_frames = config['expected_frames']
@@ -382,9 +449,9 @@ def main():
     print(f"Max generation tokens: {max_gen_tokens}")
     print(f"Max frames: {max_frames}")
     
-    # 使用固定的 dequantize 范围（GT 和 Gen 相同，确保公平比较）
-    V_MIN_FIXED = -3000.0
-    V_MAX_FIXED = 3000.0
+    # 后备的固定范围（当无法获取原始数据时使用）
+    V_MIN_FALLBACK = -3000.0
+    V_MAX_FALLBACK = 3000.0
     
     for i, sample in enumerate(tqdm(test_data, desc="Evaluating")):
         text = sample['text']
@@ -408,17 +475,41 @@ def main():
             fail_count += 1
             continue
         
-        # 使用相同的 dequantize（GT 和 Gen 一致）
-        gt_motion_dq = dequantize(gt_motion, v_min=V_MIN_FIXED, v_max=V_MAX_FIXED)
-        gen_motion_dq = dequantize(gen_motion, v_min=V_MIN_FIXED, v_max=V_MAX_FIXED)
+        # 获取原始数据的 min/max
+        motion_id = text_to_motion_id.get(text)
+        if motion_id:
+            raw_motion, v_min, v_max = get_motion_minmax(motion_id)
+            if raw_motion is not None:
+                # 使用原始数据的 min/max（绝对 FID）
+                use_raw = True
+            else:
+                v_min, v_max = V_MIN_FALLBACK, V_MAX_FALLBACK
+                use_raw = False
+        else:
+            v_min, v_max = V_MIN_FALLBACK, V_MAX_FALLBACK
+            use_raw = False
+            motion_id = "unknown"
         
-        # 调试：检查 tokens 是否匹配
+        # 记录 min/max 信息
+        minmax_info.append({
+            'motion_id': motion_id,
+            'v_min': v_min,
+            'v_max': v_max,
+            'use_raw': use_raw,
+        })
+        
+        # 反量化
+        gt_motion_dq = dequantize(gt_motion, v_min=v_min, v_max=v_max)
+        gen_motion_dq = dequantize(gen_motion, v_min=v_min, v_max=v_max)
+        
+        # 调试：检查 tokens 是否匹配，打印 min/max
         if i == 0 or args.verbose:
             gt_flat = gt_motion.flatten()
             gen_flat = gen_motion.flatten()
             min_len = min(len(gt_flat), len(gen_flat))
             token_match = np.sum(gt_flat[:min_len] == gen_flat[:min_len])
-            print(f"\n[{i}] Debug:")
+            print(f"\n[{i}] Debug (motion_id={motion_id}):")
+            print(f"    v_min={v_min:.2f}, v_max={v_max:.2f}, use_raw={use_raw}")
             print(f"    GT tokens (first 20): {gt_flat[:20]}")
             print(f"    Gen tokens (first 20): {gen_flat[:20]}")
             print(f"    Token match: {token_match}/{min_len} ({100*token_match/min_len:.1f}%)")
@@ -434,6 +525,25 @@ def main():
         np.save(os.path.join(output_dir, f"gt_{i:04d}.npy"), gt_motion_dq)
     
     print(f"\nSuccess: {success_count}, Failed: {fail_count}")
+    
+    # 打印 min/max 统计信息
+    if minmax_info:
+        use_raw_count = sum(1 for info in minmax_info if info['use_raw'])
+        v_mins = [info['v_min'] for info in minmax_info]
+        v_maxs = [info['v_max'] for info in minmax_info]
+        
+        print(f"\n{'='*60}")
+        print("Min/Max Statistics")
+        print(f"{'='*60}")
+        print(f"Samples using raw min/max: {use_raw_count}/{len(minmax_info)}")
+        print(f"v_min range: [{min(v_mins):.2f}, {max(v_mins):.2f}], mean={np.mean(v_mins):.2f}")
+        print(f"v_max range: [{min(v_maxs):.2f}, {max(v_maxs):.2f}], mean={np.mean(v_maxs):.2f}")
+        
+        # 打印每个样本的详细 min/max
+        print("\nPer-sample min/max:")
+        for idx, info in enumerate(minmax_info):
+            raw_flag = "RAW" if info['use_raw'] else "FALLBACK"
+            print(f"  [{idx}] {info['motion_id']}: v_min={info['v_min']:.2f}, v_max={info['v_max']:.2f} ({raw_flag})")
     
     if success_count == 0:
         print("ERROR: No valid generations!")
